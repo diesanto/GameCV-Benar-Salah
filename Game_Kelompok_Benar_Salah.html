@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Kelompok - Benar atau Salah (Bounding Box Fix V6)</title>
+    
+    <!-- Load TensorFlow.js dan BlazeFace -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface"></script>
+    
+    <style>
+        body { margin: 0; padding: 0; background: #222; font-family: 'Comic Sans MS', sans-serif; display: flex; flex-direction: column; align-items: center; min-height: 100vh; overflow: hidden; }
+        
+        #game-container { position: relative; width: 100vw; height: 100vh; background-color: #000; overflow: hidden; }
+        canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
+        #boundary-canvas { position: absolute; top: 0; left: 0; z-index: 16; pointer-events: none; }
+        
+        #zones { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; pointer-events: none; z-index: 5; }
+        .zone { width: 50%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; transition: all 0.5s ease-in-out; }
+        .zone-title { font-size: 8vw; font-weight: bold; text-shadow: 4px 4px 10px rgba(0,0,0,0.8); opacity: 0.6; }
+        
+        #zone-left { background: rgba(0, 255, 0, 0.15); border-right: 6px dashed rgba(255,255,255,0.8); }
+        #zone-left .zone-title { color: #4caf50; }
+        
+        #zone-right { background: rgba(255, 0, 0, 0.15); }
+        #zone-right .zone-title { color: #f44336; }
+
+        .zone.winner { background: rgba(0, 255, 0, 0.5) !important; z-index: 10; opacity: 1;}
+        #zone-right.winner { background: rgba(255, 0, 0, 0.5) !important; }
+        .zone.winner .zone-title { opacity: 1; transform: scale(1.2); transition: transform 0.5s; color: #fff !important;}
+        
+        .zone.loser { background: rgba(0,0,0,0.7) !important; filter: grayscale(100%); opacity: 0.3; }
+
+        #top-bar { position: absolute; top: 30px; width: 100%; display: flex; justify-content: center; align-items: center; gap: 20px; z-index: 15; pointer-events: none; }
+        #timer-display { font-size: 6rem; font-weight: bold; color: #fff; background: rgba(0,0,0,0.6); padding: 10px 50px; border-radius: 50px; text-shadow: 3px 3px 6px #000; border: 5px solid #fff; transition: color 0.3s; margin-left: 30px; }
+        .timer-warning { color: #ffeb3b !important; }
+        .timer-danger { color: #f44336 !important; animation: pulse 1s infinite; }
+        
+        .hud-btn { background: #fff; color: #2e7d32; border: 4px solid #4caf50; padding: 15px 30px; border-radius: 40px; font-size: 2rem; font-weight: bold; cursor: pointer; pointer-events: auto; box-shadow: 0 5px 15px rgba(0,0,0,0.4); transition: all 0.2s ease; font-family: inherit; }
+        .hud-btn:hover { transform: scale(1.05); }
+        .hud-btn.off { background: #ffebee; color: #c62828; border-color: #ef5350; }
+
+        #question-box { position: absolute; bottom: 40px; left: 5%; width: 90%; background: rgba(255,255,255,0.95); padding: 30px; border-radius: 20px; font-size: 3.5rem; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 15; color: #111; font-weight: bold; border: 5px solid #2196f3; display: none; line-height: 1.3; }
+
+        .screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 20; text-align: center; color: #fff; }
+        button:not(.hud-btn) { background: #ff9800; color: #fff; border: 4px solid #fff; padding: 20px 40px; font-size: 2.5rem; border-radius: 50px; cursor: pointer; font-family: inherit; font-weight: bold; box-shadow: 0 10px 20px rgba(0,0,0,0.5); transition: transform 0.2s; margin-top: 20px; }
+        button:not(.hud-btn):hover { transform: scale(1.1); background: #f57c00; }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+
+        #result-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0); font-size: 5rem; font-weight: bold; color: #fff; text-shadow: 4px 4px 15px #000; z-index: 25; text-align: center; background: rgba(0,0,0,0.85); padding: 40px 60px; border-radius: 30px; border: 8px solid #fff; opacity: 0; transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); display: none; width: 80%; max-width: 1000px;}
+        #result-text.show { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+        
+        .feedback-stats { font-size: 3rem; margin-top: 20px; font-weight: normal; background: rgba(255,255,255,0.15); padding: 20px; border-radius: 20px; text-shadow: none; border: 2px solid rgba(255,255,255,0.3); display: flex; justify-content: space-around;}
+        .stat-benar { color: #4caf50; font-weight: bold; text-shadow: 2px 2px 5px #000; }
+        .stat-salah { color: #f44336; font-weight: bold; text-shadow: 2px 2px 5px #000; }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- CRITICAL FIX: Video mentah tersembunyi untuk AI -->
+        <video id="video" autoplay playsinline style="display: none;"></video>
+        
+        <canvas id="canvas"></canvas>
+        <canvas id="boundary-canvas"></canvas>
+
+        <div id="zones">
+            <div id="zone-left" class="zone"><div class="zone-title">BENAR</div></div>
+            <div id="zone-right" class="zone"><div class="zone-title">SALAH</div></div>
+        </div>
+
+        <div id="top-bar" style="display: none;">
+            <button id="tts-btn" class="hud-btn" onclick="toggleTTS()">🔊 Suara: ON</button>
+            <button id="mirror-btn" class="hud-btn" onclick="toggleMirror()">🪞 Flip: ON</button>
+            <div id="timer-display">15</div>
+        </div>
+
+        <div id="question-box"></div>
+        
+        <div id="result-text">
+            JAWABAN: <span id="answer-text"></span>
+            <div class="feedback-stats">
+                <div>BENAR: <span class="stat-benar" id="count-benar">0</span> anak</div>
+                <div>SALAH: <span class="stat-salah" id="count-salah">0</span> anak</div>
+            </div>
+        </div>
+
+        <div id="loading" class="screen">
+            <h2>Memuat Kamera & AI...</h2>
+            <p id="loading-status" style="font-size: 1.5rem; color: #ffeb3b;">Menunggu izin kamera dan model TensorFlow...</p>
+        </div>
+
+        <div id="start-screen" class="screen" style="display: none;">
+            <h1 style="font-size: 5rem; margin-bottom: 10px; color: #4caf50;">Cerdas Cermat Kelompok</h1>
+            <p style="font-size: 2.5rem; max-width: 900px; margin-bottom: 40px; line-height: 1.4;">
+                Saat pertanyaan muncul, anak-anak berlarilah dan berkumpul di sisi <strong style="color: #4caf50;">BENAR</strong> atau <strong style="color: #f44336;">SALAH</strong> sebelum waktu habis!
+            </p>
+            <button onclick="startGame()">MULAI BERMAIN</button>
+        </div>
+
+        <div id="end-screen" class="screen" style="display: none;">
+            <h1 style="font-size: 6rem;">🎉 Permainan Selesai! 🎉</h1>
+            <p style="font-size: 3rem;">Semua pertanyaan telah dijawab.</p>
+            <button onclick="location.reload()">Main Lagi</button>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const boundaryCanvas = document.getElementById('boundary-canvas');
+        const boundaryCtx = boundaryCanvas.getContext('2d');
+        let model;
+        
+        let questions = [];
+        
+        const defaultQuestions = [
+            { q: "Puasa di bulan Ramadan hukumnya WAJIB bagi seluruh umat Islam.", a: "BENAR" },
+            { q: "Makan dan minum dengan sengaja di siang hari TIDAK membatalkan puasa.", a: "SALAH" },
+            { q: "Saat sedang berpuasa, kita harus sabar dan menahan amarah.", a: "BENAR" },
+            { q: "Makan Sahur sebaiknya dilakukan pada sore hari sebelum tidur.", a: "SALAH" },
+            { q: "Sikat gigi saat puasa diperbolehkan asalkan airnya tidak tertelan.", a: "BENAR" },
+            { q: "Menangis membatalkan puasa.", a: "SALAH" },
+            { q: "Niat puasa Ramadan dilakukan pada malam hari hingga sebelum terbit fajar.", a: "BENAR" }
+        ];
+
+        let currentQ = 0;
+        let timer = 15; 
+        let timerInterval;
+        let audioCtx;
+        
+        let latestFacePositions = [];
+        
+        let isTTSEnabled = true;
+        let isMirrored = true;
+
+        function shuffleArray(array) {
+            let shuffled = [...array];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
+            return shuffled;
+        }
+
+        async function fetchQuestions() {
+            try {
+                const response = await fetch('questions.json');
+                if (!response.ok) throw new Error("Gagal mengambil file JSON");
+                const data = await response.json();
+                return shuffleArray(data);
+            } catch (error) {
+                console.warn("Menggunakan bank soal cadangan:", error);
+                return shuffleArray(defaultQuestions);
+            }
+        }
+
+        function initAudio() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+        }
+
+        function toggleTTS() {
+            isTTSEnabled = !isTTSEnabled;
+            const btn = document.getElementById('tts-btn');
+            if (isTTSEnabled) {
+                btn.innerHTML = "🔊 Suara: ON";
+                btn.classList.remove('off');
+            } else {
+                btn.innerHTML = "🔇 Suara: OFF";
+                btn.classList.add('off');
+                stopSpeech(); 
+            }
+        }
+
+        function speakQuestion(text) {
+            if (!isTTSEnabled || !('speechSynthesis' in window)) return;
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'id-ID';
+            utterance.rate = 0.9; 
+            utterance.pitch = 1.1;
+            window.speechSynthesis.speak(utterance);
+        }
+
+        function stopSpeech() {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+            }
+        }
+
+        function toggleMirror() {
+            isMirrored = !isMirrored;
+            const btn = document.getElementById('mirror-btn');
+            if (isMirrored) {
+                btn.innerHTML = "🪞 Flip: ON";
+                btn.classList.remove('off');
+            } else {
+                btn.innerHTML = "🪞 Flip: OFF";
+                btn.classList.add('off');
+            }
+        }
+
+        function playRevealSound() {
+            initAudio();
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(523.25, now); 
+            osc.frequency.setValueAtTime(659.25, now + 0.2); 
+            osc.frequency.setValueAtTime(783.99, now + 0.4); 
+            
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(0.5, now + 0.1);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 1.5);
+            
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now);
+            osc.stop(now + 1.5);
+        }
+
+        function playTickSound() {
+            initAudio();
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(800, now);
+            gain.gain.setValueAtTime(0.1, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(now);
+            osc.stop(now + 0.1);
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            boundaryCanvas.width = canvas.width;
+            boundaryCanvas.height = canvas.height;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function getVideoTransform() {
+            const scale = Math.max(
+                canvas.width / video.videoWidth,
+                canvas.height / video.videoHeight
+            );
+            return {
+                scale,
+                offsetX: (canvas.width - video.videoWidth * scale) / 2,
+                offsetY: (canvas.height - video.videoHeight * scale) / 2
+            };
+        }
+
+        async function initCamera() {
+            try {
+                document.getElementById('loading-status').innerText = "Mengakses Kamera...";
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, 
+                    audio: false 
+                });
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = () => {
+                    // PERBAIKAN KRITIS: Memastikan nilai properties HTML 'width' dan 'height' terdefinisi
+                    // agar TensorFlow.js tidak gagal memproses frame video (Error 0x0 size)
+                    video.width = video.videoWidth;
+                    video.height = video.videoHeight;
+                    
+                    video.play();
+                    resizeCanvas();
+                    loadAIModel();
+                };
+            } catch (err) {
+                document.getElementById('loading').innerHTML = "<h2 style='color:#f44336;'>Kamera Tidak Terdeteksi!</h2><p>Pastikan laptop memiliki kamera yang aktif dan diizinkan.</p>";
+            }
+        }
+
+        async function loadAIModel() {
+            document.getElementById('loading-status').innerText = "Memuat Modul AI (BlazeFace)...";
+            try {
+                model = await blazeface.load();
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('start-screen').style.display = 'flex';
+                detectLoop();
+            } catch (err) {
+                document.getElementById('loading').innerHTML = "<h2 style='color:#f44336;'>Gagal Memuat AI!</h2><p>Pastikan koneksi internet stabil atau gunakan file lokal.</p>";
+                console.error(err);
+            }
+        }
+
+        async function detectLoop() {
+            // Jika video belum memiliki dimensi valid, tunggu sejenak
+            if (!video.videoWidth || !video.videoHeight || video.videoWidth === 0) {
+                requestAnimationFrame(detectLoop);
+                return;
+            }
+
+            const { scale, offsetX, offsetY } = getVideoTransform();
+            ctx.save();
+            if (isMirrored) {
+                ctx.translate(canvas.width, 0);
+                ctx.scale(-1, 1);
+            }
+            ctx.drawImage(
+                video,
+                offsetX,
+                offsetY,
+                video.videoWidth * scale,
+                video.videoHeight * scale
+            );
+            ctx.restore();
+            
+            let predictions = [];
+            try {
+                predictions = await model.estimateFaces(video, false);
+            } catch (e) {
+                console.warn("AI Estimation Skip:", e);
+            }
+            
+            latestFacePositions = [];
+            
+            boundaryCtx.clearRect(0, 0, boundaryCanvas.width, boundaryCanvas.height);
+            boundaryCtx.save();
+            boundaryCtx.fillStyle = "rgba(0, 0, 0, 0.7)";
+            boundaryCtx.fillRect(10, 10, 310, 45);
+            boundaryCtx.fillStyle = predictions.length > 0 ? "#00ff00" : "#ff3333";
+            boundaryCtx.font = "bold 22px Arial";
+            boundaryCtx.fillText(`🤖 AI: ${predictions.length} Wajah Terdeteksi`, 20, 40);
+            boundaryCtx.restore();
+
+            if (predictions.length > 0) {
+                predictions.forEach((pred, index) => {
+                    const start = pred.topLeft;
+                    const end = pred.bottomRight;
+                    
+                    const startX = Number(start[0] ?? start.x);
+                    const startY = Number(start[1] ?? start.y);
+                    const endX = Number(end[0] ?? end.x);
+                    const endY = Number(end[1] ?? end.y);
+                    if (![startX, startY, endX, endY].every(Number.isFinite)) return;
+                    
+                    const boxWidth = (endX - startX) * scale;
+                    const boxHeight = (endY - startY) * scale;
+                    let rectX = startX * scale + offsetX;
+                    const rectY = startY * scale + offsetY;
+                    let faceX = rectX + boxWidth / 2;
+                    const faceY = rectY + boxHeight / 2;
+
+                    if (isMirrored) {
+                        faceX = canvas.width - faceX;
+                        rectX = canvas.width - rectX - boxWidth;
+                    }
+                    
+                    latestFacePositions.push(faceX);
+
+                    boundaryCtx.save();
+                    boundaryCtx.beginPath();
+                    boundaryCtx.rect(rectX, rectY, boxWidth, boxHeight);
+                    boundaryCtx.lineWidth = 4;
+                    boundaryCtx.strokeStyle = "#ffff00";
+                    boundaryCtx.shadowColor = "#000000";
+                    boundaryCtx.shadowBlur = 10;
+                    boundaryCtx.stroke();
+
+                    boundaryCtx.fillStyle = "#ffff00";
+                    boundaryCtx.shadowBlur = 0;
+                    const label = `Wajah ${index + 1}`;
+                    boundaryCtx.font = "bold 18px Arial";
+                    const labelWidth = boundaryCtx.measureText(label).width + 16;
+                    const labelY = Math.max(0, rectY - 28);
+                    boundaryCtx.fillRect(rectX, labelY, labelWidth, 28);
+                    
+                    boundaryCtx.fillStyle = "#000000";
+                    boundaryCtx.fillText(label, rectX + 8, labelY + 20);
+
+                    boundaryCtx.beginPath();
+                    boundaryCtx.arc(faceX, faceY, 10, 0, 2 * Math.PI);
+                    boundaryCtx.fillStyle = "#ff0000";
+                    boundaryCtx.fill();
+                    boundaryCtx.lineWidth = 3;
+                    boundaryCtx.strokeStyle = "#ffffff";
+                    boundaryCtx.stroke();
+                    
+                    boundaryCtx.restore();
+                });
+            }
+            requestAnimationFrame(detectLoop);
+        }
+
+        async function startGame() {
+            initAudio();
+            if (document.documentElement.requestFullscreen) {
+                document.documentElement.requestFullscreen().catch((e)=>{});
+            }
+            document.getElementById('start-screen').style.display = 'none';
+            document.getElementById('top-bar').style.display = 'flex';
+            document.getElementById('question-box').style.display = 'block';
+            
+            questions = await fetchQuestions();
+            currentQ = 0;
+            
+            showNextQuestion();
+        }
+
+        function showNextQuestion() {
+            if (currentQ >= questions.length) {
+                endGame();
+                return;
+            }
+            
+            document.getElementById('zone-left').className = 'zone';
+            document.getElementById('zone-right').className = 'zone';
+            
+            const questionText = questions[currentQ].q;
+            document.getElementById('question-box').innerText = questionText;
+            
+            speakQuestion(questionText);
+            
+            timer = 15;
+            updateTimerUI();
+            
+            timerInterval = setInterval(() => {
+                timer--;
+                updateTimerUI();
+                
+                if (timer <= 5 && timer > 0) {
+                    playTickSound();
+                }
+
+                if (timer <= 0) {
+                    clearInterval(timerInterval);
+                    revealAnswer();
+                }
+            }, 1000);
+        }
+
+        function updateTimerUI() {
+            const timerEl = document.getElementById('timer-display');
+            timerEl.innerText = timer;
+            
+            if (timer <= 5) {
+                timerEl.className = 'timer-danger';
+            } else if (timer <= 10) {
+                timerEl.className = 'timer-warning';
+            } else {
+                timerEl.className = '';
+            }
+        }
+
+        function revealAnswer() {
+            stopSpeech(); 
+            let correctAnswer = questions[currentQ].a;
+            playRevealSound();
+            
+            let hitungBenar = 0;
+            let hitungSalah = 0;
+            
+            latestFacePositions.forEach(x => {
+                if (x < canvas.width / 2) {
+                    hitungBenar++;
+                } else {
+                    hitungSalah++;
+                }
+            });
+            
+            document.getElementById('count-benar').innerText = hitungBenar;
+            document.getElementById('count-salah').innerText = hitungSalah;
+
+            const leftZone = document.getElementById('zone-left');
+            const rightZone = document.getElementById('zone-right');
+            const resultBox = document.getElementById('result-text');
+            const answerText = document.getElementById('answer-text');
+            
+            if (correctAnswer === "BENAR") {
+                leftZone.classList.add('winner');
+                rightZone.classList.add('loser');
+                answerText.innerText = "BENAR!";
+                answerText.style.color = "#4caf50";
+            } else {
+                rightZone.classList.add('winner');
+                leftZone.classList.add('loser');
+                answerText.innerText = "SALAH!";
+                answerText.style.color = "#f44336";
+            }
+            
+            resultBox.style.display = 'block';
+            setTimeout(() => resultBox.classList.add('show'), 50);
+            
+            setTimeout(() => {
+                resultBox.classList.remove('show');
+                setTimeout(() => {
+                    resultBox.style.display = 'none';
+                    currentQ++;
+                    showNextQuestion();
+                }, 500);
+            }, 7000);
+        }
+
+        function endGame() {
+            stopSpeech();
+            document.getElementById('top-bar').style.display = 'none';
+            document.getElementById('zones').style.display = 'none';
+            document.getElementById('question-box').style.display = 'none';
+            document.getElementById('end-screen').style.display = 'flex';
+        }
+
+        window.onload = initCamera;
+    </script>
+</body>
+</html>
